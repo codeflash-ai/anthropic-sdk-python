@@ -128,9 +128,8 @@ def parse_date(value: Union[date, StrBytesIntFloat]) -> date:
     if match is None:
         raise ValueError("invalid date format")
 
-    kw = {k: int(v) for k, v in match.groupdict().items()}
-
+    gd = match.groupdict()
     try:
-        return date(**kw)
+        return date(int(gd['year']), int(gd['month']), int(gd['day']))
     except ValueError:
         raise ValueError("invalid date format") from None
