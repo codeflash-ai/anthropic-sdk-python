@@ -153,8 +153,7 @@ class BetaMessageStreamManager:
         self.__api_request = api_request
 
     def __enter__(self) -> BetaMessageStream:
-        raw_stream = self.__api_request()
-        self.__stream = BetaMessageStream(raw_stream)
+        self.__stream = BetaMessageStream(self.__api_request())
         return self.__stream
 
     def __exit__(
