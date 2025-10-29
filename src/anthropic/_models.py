@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import inspect
-from typing import TYPE_CHECKING, Any, Type, Union, Generic, TypeVar, Callable, Optional, cast
+from typing import Dict, Tuple, TYPE_CHECKING, Any, Type, Union, Generic, TypeVar, Callable, Optional, cast
 from datetime import date, datetime
 from typing_extensions import (
     List,
@@ -63,6 +63,7 @@ from ._compat import (
     field_get_default,
 )
 from ._constants import RAW_RESPONSE_HEADER
+from functools import lru_cache
 
 if TYPE_CHECKING:
     from pydantic_core.core_schema import ModelField, ModelSchema, LiteralSchema, ModelFieldsSchema
@@ -452,7 +453,14 @@ def build(
             "Received positional arguments which are not supported; Keyword arguments must be used instead",
         )
 
-    return cast(_BaseModelT, construct_type(type_=base_model_cls, value=kwargs))
+    # Use the cached version if possible
+    try:
+        cache_key = _model_cache_key(base_model_cls, kwargs)
+        result = _cached_construct_type(base_model_cls, cache_key[1])
+    except TypeError:
+        # If any kwarg value is not hashable, fall back to uncached
+        result = construct_type(type_=base_model_cls, value=kwargs)
+    return cast(_BaseModelT, result)
 
 
 def construct_type_unchecked(*, value: object, type_: type[_T]) -> _T:
@@ -739,6 +747,18 @@ def add_request_id(obj: BaseModel, request_id: str | None) -> None:
             cast(Any, obj).__exclude_fields__ = {"_request_id", "__exclude_fields__"}
         else:
             cast(Any, obj).__exclude_fields__ = {*(exclude_fields or {}), "_request_id", "__exclude_fields__"}
+
+
+def _model_cache_key(base_model_cls: Callable, kwargs: Dict[str, Any]) -> Tuple:
+    # Build hashable key from class + sorted kwargs items
+    return (base_model_cls, tuple(sorted(kwargs.items())))
+
+
+@lru_cache(maxsize=4096)  # Reasonable cache size for model constructions
+def _cached_construct_type(base_model_cls: Callable, kwargs_tuple: Tuple):
+    # Since kwargs_tuple is sorted tuple of items, reconstruct dict
+    kwargs = dict(kwargs_tuple)
+    return construct_type(type_=base_model_cls, value=kwargs)
 
 
 # our use of subclassing here causes weirdness for type checkers,
