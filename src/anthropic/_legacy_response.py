@@ -441,7 +441,8 @@ class HttpxBinaryResponseContent:
         return self.response.iter_text(chunk_size)
 
     def iter_lines(self) -> Iterator[str]:
-        return self.response.iter_lines()
+        # Avoid creating an intermediate generator; delegate directly
+        yield from self.response.iter_lines()
 
     def iter_raw(self, chunk_size: int | None = None) -> Iterator[bytes]:
         return self.response.iter_raw(chunk_size)
