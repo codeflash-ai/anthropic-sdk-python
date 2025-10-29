@@ -47,10 +47,12 @@ def _from_unix_seconds(seconds: Union[int, float]) -> datetime:
     elif seconds < -MAX_NUMBER:
         return datetime.min
 
-    while abs(seconds) > MS_WATERSHED:
+    abs_seconds = abs(seconds)
+    while abs_seconds > MS_WATERSHED:
         seconds /= 1000
-    dt = EPOCH + timedelta(seconds=seconds)
-    return dt.replace(tzinfo=timezone.utc)
+        abs_seconds /= 1000
+    
+    return datetime.fromtimestamp(seconds, tz=timezone.utc)
 
 
 def _parse_timezone(value: Optional[str]) -> Union[None, int, timezone]:
