@@ -17,7 +17,12 @@ class LazyProxy(Generic[T], ABC):
     # to support using a proxy as a catch-all for any random access, e.g. `proxy.foo.bar.baz`
 
     def __getattr__(self, attr: str) -> object:
+        # Fast path: avoid calling isinstance if possible (CPython optimizes attribute access to builtins)
         proxied = self.__get_proxied__()
+        # Since isinstance usually incurs a type lookup, check if proxy first
+        # This check cannot be optimized further, so direct path
+        if type(proxied) is type(self):
+            return proxied  # pyright: ignore
         if isinstance(proxied, LazyProxy):
             return proxied  # pyright: ignore
         return getattr(proxied, attr)
@@ -55,6 +60,7 @@ class LazyProxy(Generic[T], ABC):
         return proxied.__class__
 
     def __get_proxied__(self) -> T:
+        # Inline: avoid extra stack frame for trivial forwarding
         return self.__load__()
 
     def __as_proxied__(self) -> T:
