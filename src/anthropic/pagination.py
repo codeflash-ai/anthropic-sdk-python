@@ -18,10 +18,8 @@ class SyncPage(BaseSyncPage[_T], BasePage[_T], Generic[_T]):
 
     @override
     def _get_page_items(self) -> List[_T]:
-        data = self.data
-        if not data:
-            return []
-        return data
+        # Directly return self.data, since an empty list is already self.data in those cases.
+        return self.data
 
     @override
     def has_next_page(self) -> bool:
