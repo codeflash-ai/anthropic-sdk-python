@@ -830,7 +830,8 @@ class FinalRequestOptions(pydantic.BaseModel):
         model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
 
     def get_max_retries(self, max_retries: int) -> int:
-        if isinstance(self.max_retries, NotGiven):
+        # Use type identity for singleton class check, which is faster than isinstance for this use-case.
+        if type(self.max_retries) is NotGiven:
             return max_retries
         return self.max_retries
 
