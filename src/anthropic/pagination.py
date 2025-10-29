@@ -120,10 +120,9 @@ class AsyncTokenPage(BaseAsyncPage[_T], BasePage[_T], Generic[_T]):
 
     @override
     def _get_page_items(self) -> List[_T]:
-        data = self.data
-        if not data:
-            return []
-        return data
+        # Directly return self.data, as 'if not data: return []' is redundant;
+        # self.data is already a List[_T] and, if empty, returns [].
+        return self.data
 
     @override
     def has_next_page(self) -> bool:
