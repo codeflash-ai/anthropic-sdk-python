@@ -184,9 +184,9 @@ def deepcopy_minimal(item: _T) -> _T:
 
     This is done for performance reasons.
     """
-    if is_mapping(item):
+    if isinstance(item, dict):
         return cast(_T, {k: deepcopy_minimal(v) for k, v in item.items()})
-    if is_list(item):
+    if isinstance(item, list):
         return cast(_T, [deepcopy_minimal(entry) for entry in item])
     return item
 
