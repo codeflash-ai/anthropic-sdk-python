@@ -90,16 +90,18 @@ class BaseFunctionTool(Generic[CallableT]):
         else:
             self.input_schema = self._create_schema_from_function()
 
+        self._cached_dict: ToolParam = {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.input_schema,
+        }
+
     @property
     def __call__(self) -> CallableT:
         return self.func
 
     def to_dict(self) -> ToolParam:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.input_schema,
-        }
+        return self._cached_dict
 
     @cached_property
     def _parsed_docstring(self) -> docstring_parser.Docstring:
