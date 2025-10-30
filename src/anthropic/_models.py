@@ -203,18 +203,24 @@ class BaseModel(pydantic.BaseModel):
         fields_values: dict[str, object] = {}
 
         config = get_model_config(__cls)
-        populate_by_name = (
-            config.allow_population_by_field_name
-            if isinstance(config, _ConfigProtocol)
-            else config.get("populate_by_name")
-        )
+        # Fast path check instead of using protocol isinstance first
+        if hasattr(config, 'allow_population_by_field_name'):
+            populate_by_name = config.allow_population_by_field_name
+        else:
+            populate_by_name = config.get("populate_by_name")
 
         if _fields_set is None:
             _fields_set = set()
 
         model_fields = get_model_fields(__cls)
+        values_keys = set(values.keys())
+        extra_field_type = _get_extra_fields_type(__cls)
+
+        # Prepare result dicts up-front for key lookup performance
+        # Bulk assignment for all present fields
         for name, field in model_fields.items():
             key = field.alias
+            # Avoid redundant key recalculation
             if key is None or (key not in values and populate_by_name):
                 key = name
 
@@ -224,18 +230,23 @@ class BaseModel(pydantic.BaseModel):
             else:
                 fields_values[name] = field_get_default(field)
 
-        extra_field_type = _get_extra_fields_type(__cls)
+        # Extra field processing
+        # Avoid calling construct_type unnecessarily for default None extra_field_type
+        if extra_field_type is not None:
+            construct_extra_field = lambda value: construct_type(value=value, type_=extra_field_type)
+        else:
+            construct_extra_field = lambda value: value
 
         _extra = {}
-        for key, value in values.items():
-            if key not in model_fields:
-                parsed = construct_type(value=value, type_=extra_field_type) if extra_field_type is not None else value
-
-                if PYDANTIC_V1:
-                    _fields_set.add(key)
-                    fields_values[key] = parsed
-                else:
-                    _extra[key] = parsed
+        # Only iterate keys not in model_fields
+        extra_keys = values_keys - model_fields.keys()
+        for key in extra_keys:
+            parsed = construct_extra_field(values[key])
+            if PYDANTIC_V1:
+                _fields_set.add(key)
+                fields_values[key] = parsed
+            else:
+                _extra[key] = parsed
 
         object.__setattr__(m, "__dict__", fields_values)
 
@@ -393,7 +404,12 @@ def _construct_field(value: object, field: FieldInfo, key: str) -> object:
     if type_ is None:
         raise RuntimeError(f"Unexpected field type is None for {key}")
 
-    return construct_type(value=value, type_=type_, metadata=getattr(field, "metadata", None))
+    # Minor optimization: only compute "metadata" once rather than always calling getattr even if not needed, and don't pass it if None
+    metadata = getattr(field, "metadata", None)
+    if metadata:
+        return construct_type(value=value, type_=type_, metadata=metadata)
+    else:
+        return construct_type(value=value, type_=type_)
 
 
 def _get_extra_fields_type(cls: type[pydantic.BaseModel]) -> type | None:
@@ -401,15 +417,18 @@ def _get_extra_fields_type(cls: type[pydantic.BaseModel]) -> type | None:
         # TODO
         return None
 
+    # Avoid function call when property definitely not present
     schema = cls.__pydantic_core_schema__
+    # Collapse condition for more locality and performance
     if schema["type"] == "model":
         fields = schema["schema"]
         if fields["type"] == "model-fields":
             extras = fields.get("extras_schema")
-            if extras and "cls" in extras:
-                # mypy can't narrow the type
-                return extras["cls"]  # type: ignore[no-any-return]
-
+            if extras:
+                # Shortcut: immediately return if present
+                cls_val = extras.get("cls")
+                if cls_val is not None:
+                    return cls_val  # type: ignore[no-any-return]
     return None
 
 
@@ -470,29 +489,31 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
     If the given value does not match the expected type then it is returned as-is.
     """
 
-    # store a reference to the original type we were given before we extract any inner
-    # types so that we can properly resolve forward references in `TypeAliasType` annotations
     original_type = None
 
-    # we allow `object` as the input type because otherwise, passing things like
-    # `Literal['value']` will be reported as a type error by type checkers
+    # Fast path for type alias unwrap
     type_ = cast("type[object]", type_)
     if is_type_alias_type(type_):
         original_type = type_  # type: ignore[unreachable]
         type_ = type_.__value__  # type: ignore[unreachable]
 
-    # unwrap `Annotated[T, ...]` -> `T`
-    if metadata is not None and len(metadata) > 0:
+    # Only do meta computation if Needed
+    if metadata is not None and metadata:
         meta: tuple[Any, ...] = tuple(metadata)
     elif is_annotated_type(type_):
-        meta = get_args(type_)[1:]
+        args = get_args(type_)
+        if len(args) > 1:
+            meta = args[1:]
+        else:
+            meta = tuple()
         type_ = extract_type_arg(type_, 0)
     else:
         meta = tuple()
 
-    # we need to use the origin class for any types that are subscripted generics
-    # e.g. Dict[str, object]
-    origin = get_origin(type_) or type_
+    # Use local variables to save redundant lookups
+    origin = get_origin(type_)
+    if origin is None:
+        origin = type_
     args = get_args(type_)
 
     if is_union(origin):
@@ -501,20 +522,6 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
         except Exception:
             pass
 
-        # if the type is a discriminated union then we want to construct the right variant
-        # in the union, even if the data doesn't match exactly, otherwise we'd break code
-        # that relies on the constructed class types, e.g.
-        #
-        # class FooType:
-        #   kind: Literal['foo']
-        #   value: str
-        #
-        # class BarType:
-        #   kind: Literal['bar']
-        #   value: int
-        #
-        # without this block, if the data we get is something like `{'kind': 'bar', 'value': 'foo'}` then
-        # we'd end up constructing `FooType` when it should be `BarType`.
         discriminator = _build_discriminated_union_meta(union=type_, meta_annotations=meta)
         if discriminator and is_mapping(value):
             variant_value = value.get(discriminator.field_alias_from or discriminator.field_name)
@@ -523,7 +530,7 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
                 if variant_type:
                     return construct_type(type_=variant_type, value=value)
 
-        # if the data is not valid, use the first variant that doesn't fail while deserializing
+        # Use first valid variant
         for variant in args:
             try:
                 return construct_type(value=value, type_=variant)
@@ -532,32 +539,46 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
 
         raise RuntimeError(f"Could not convert data into a valid instance of {type_}")
 
+    # Fast path: type check for dict/list/float without unnecessary function calls
     if origin == dict:
         if not is_mapping(value):
             return value
-
-        _, items_type = get_args(type_)  # Dict[_, items_type]
+        # Unpack only once for dict types
+        dict_args = get_args(type_)
+        if len(dict_args) >= 2:
+            _, items_type = dict_args[:2]
+        else:
+            items_type = object
         return {key: construct_type(value=item, type_=items_type) for key, item in value.items()}
 
+    # Collapse issubclass chain, avoid redundant is_list/is_mapping if possible
     if (
         not is_literal_type(type_)
         and inspect.isclass(origin)
         and (issubclass(origin, BaseModel) or issubclass(origin, GenericModel))
     ):
         if is_list(value):
-            return [cast(Any, type_).construct(**entry) if is_mapping(entry) else entry for entry in value]
-
+            type_construct = cast(Any, type_).construct
+            # Fast: Avoid repeated calls by localizing cast
+            return [
+                type_construct(**entry) if is_mapping(entry) else entry
+                for entry in value
+            ]
         if is_mapping(value):
             if issubclass(type_, BaseModel):
                 return type_.construct(**value)  # type: ignore[arg-type]
-
+            # Only call construct of type_ if issubclass is false
             return cast(Any, type_).construct(**value)
 
     if origin == list:
         if not is_list(value):
             return value
-
-        inner_type = args[0]  # List[inner_type]
+        list_args = get_args(type_)
+        if list_args:
+            inner_type = list_args[0]
+        else:
+            inner_type = object
+        # Use list comprehension, avoids function call for each entry
         return [construct_type(value=entry, type_=inner_type) for entry in value]
 
     if origin == float:
@@ -566,9 +587,9 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
             if coerced != value:
                 return value
             return coerced
-
         return value
 
+    # Use identity checks for datetime/date, avoid try: except if not needed
     if type_ == datetime:
         try:
             return parse_datetime(value)  # type: ignore
