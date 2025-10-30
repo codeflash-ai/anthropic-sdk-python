@@ -314,6 +314,8 @@ def strip_not_given(obj: object | None) -> object:
 
 
 def coerce_integer(val: str) -> int:
+    if val.isdigit():
+        return int(val)
     return int(val, base=10)
 
 
