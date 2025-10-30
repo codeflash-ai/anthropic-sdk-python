@@ -314,6 +314,8 @@ def strip_not_given(obj: object | None) -> object:
 
 
 def coerce_integer(val: str) -> int:
+    if val.isdigit():
+        return int(val)
     return int(val, base=10)
 
 
@@ -399,9 +401,15 @@ def lru_cache(*, maxsize: int | None = 128) -> Callable[[CallableT], CallableT]:
     """A version of functools.lru_cache that retains the type signature
     for the wrapped function arguments.
     """
-    wrapper = functools.lru_cache(  # noqa: TID251
-        maxsize=maxsize,
-    )
+    # Fast path for default argument: avoid redundant function calls
+    if maxsize == 128:
+        # functools.lru_cache with default maxsize is used frequently, cache the instance
+        # Using a static variable to avoid re-creating the wrapper for default
+        if not hasattr(lru_cache, "_default_wrapper"):
+            setattr(lru_cache, "_default_wrapper", functools.lru_cache(maxsize=128))  # noqa: TID251
+        wrapper = getattr(lru_cache, "_default_wrapper")
+    else:
+        wrapper = functools.lru_cache(maxsize=maxsize)  # noqa: TID251
     return cast(Any, wrapper)  # type: ignore[no-any-return]
 
 
