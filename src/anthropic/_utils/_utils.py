@@ -314,6 +314,8 @@ def strip_not_given(obj: object | None) -> object:
 
 
 def coerce_integer(val: str) -> int:
+    if val.isdigit():
+        return int(val)
     return int(val, base=10)
 
 
@@ -328,7 +330,7 @@ def coerce_boolean(val: str) -> bool:
 def maybe_coerce_integer(val: str | None) -> int | None:
     if val is None:
         return None
-    return coerce_integer(val)
+    return int(val, 10)
 
 
 def maybe_coerce_float(val: str | None) -> float | None:
