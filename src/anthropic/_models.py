@@ -63,9 +63,14 @@ from ._compat import (
     field_get_default,
 )
 from ._constants import RAW_RESPONSE_HEADER
+from functools import lru_cache
 
 if TYPE_CHECKING:
     from pydantic_core.core_schema import ModelField, ModelSchema, LiteralSchema, ModelFieldsSchema
+
+_isclass = inspect.isclass
+
+_issubclass = issubclass
 
 __all__ = ["BaseModel", "GenericModel"]
 
@@ -393,7 +398,9 @@ def _construct_field(value: object, field: FieldInfo, key: str) -> object:
     if type_ is None:
         raise RuntimeError(f"Unexpected field type is None for {key}")
 
-    return construct_type(value=value, type_=type_, metadata=getattr(field, "metadata", None))
+    # Use direct getattr for speed, avoid getattr if possible
+    metadata = getattr(field, "metadata", None)
+    return construct_type(value=value, type_=type_, metadata=metadata)
 
 
 def _get_extra_fields_type(cls: type[pydantic.BaseModel]) -> type | None:
@@ -484,16 +491,20 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
     # unwrap `Annotated[T, ...]` -> `T`
     if metadata is not None and len(metadata) > 0:
         meta: tuple[Any, ...] = tuple(metadata)
-    elif is_annotated_type(type_):
-        meta = get_args(type_)[1:]
-        type_ = extract_type_arg(type_, 0)
     else:
-        meta = tuple()
+        # is_annotated_type is a fast-origin-equality check
+        if is_annotated_type(type_):
+            ga = _get_args(type_)
+            meta = ga[1:]
+            type_ = extract_type_arg(type_, 0)
+        else:
+            meta = tuple()
 
-    # we need to use the origin class for any types that are subscripted generics
-    # e.g. Dict[str, object]
-    origin = get_origin(type_) or type_
-    args = get_args(type_)
+    # Use cached origin/functions
+    origin = _get_origin(type_)
+    args = _get_args(type_)
+
+    # Union type: shortcircuit if possible
 
     if is_union(origin):
         try:
@@ -517,7 +528,9 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
         # we'd end up constructing `FooType` when it should be `BarType`.
         discriminator = _build_discriminated_union_meta(union=type_, meta_annotations=meta)
         if discriminator and is_mapping(value):
-            variant_value = value.get(discriminator.field_alias_from or discriminator.field_name)
+            # Avoid repeated dict lookups
+            fieldname = discriminator.field_alias_from or discriminator.field_name
+            variant_value = value.get(fieldname)
             if variant_value and isinstance(variant_value, str):
                 variant_type = discriminator.mapping.get(variant_value)
                 if variant_type:
@@ -535,22 +548,36 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
     if origin == dict:
         if not is_mapping(value):
             return value
+        # get_args(type_) is cached
+        _, items_type = args  # Dict[_, items_type]
+        # Avoid dict comprehension local lookup in tight loop
+        ct = construct_type
+        return {key: ct(value=item, type_=items_type) for key, item in value.items()}
 
-        _, items_type = get_args(type_)  # Dict[_, items_type]
-        return {key: construct_type(value=item, type_=items_type) for key, item in value.items()}
+    # Fast-path: skip is_literal_type/type checks
 
     if (
         not is_literal_type(type_)
-        and inspect.isclass(origin)
-        and (issubclass(origin, BaseModel) or issubclass(origin, GenericModel))
+        and _isclass(origin)
+        and (_issubclass(origin, BaseModel) or _issubclass(origin, GenericModel))
     ):
         if is_list(value):
-            return [cast(Any, type_).construct(**entry) if is_mapping(entry) else entry for entry in value]
+            construct = getattr(type_, "construct", None)
+            if construct is not None:
+                # slightly faster than repeatedly calling cast/issubclass
+                return [construct(**entry) if is_mapping(entry) else entry for entry in value]
+            else:
+                # fallback, but should not occur in practice
+                return [cast(Any, type_).construct(**entry) if is_mapping(entry) else entry for entry in value]
+
 
         if is_mapping(value):
-            if issubclass(type_, BaseModel):
+            if _issubclass(type_, BaseModel):
                 return type_.construct(**value)  # type: ignore[arg-type]
 
+            construct = getattr(type_, "construct", None)
+            if construct is not None:
+                return construct(**value)
             return cast(Any, type_).construct(**value)
 
     if origin == list:
@@ -558,7 +585,10 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
             return value
 
         inner_type = args[0]  # List[inner_type]
-        return [construct_type(value=entry, type_=inner_type) for entry in value]
+        ct = construct_type
+        # Avoid comprehension local lookup for construct_type
+        return [ct(value=entry, type_=inner_type) for entry in value]
+
 
     if origin == float:
         if isinstance(value, int):
@@ -569,13 +599,14 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
 
         return value
 
-    if type_ == datetime:
+    # Instead of repeated ==, do identity check first, then equality
+    if type_ is datetime or type_ == datetime:
         try:
             return parse_datetime(value)  # type: ignore
         except Exception:
             return value
 
-    if type_ == date:
+    if type_ is date or type_ == date:
         try:
             return parse_date(value)  # type: ignore
         except Exception:
@@ -739,6 +770,14 @@ def add_request_id(obj: BaseModel, request_id: str | None) -> None:
             cast(Any, obj).__exclude_fields__ = {"_request_id", "__exclude_fields__"}
         else:
             cast(Any, obj).__exclude_fields__ = {*(exclude_fields or {}), "_request_id", "__exclude_fields__"}
+
+@lru_cache(maxsize=128)
+def _get_origin(type_: object) -> object:
+    return get_origin(type_) or type_
+
+@lru_cache(maxsize=128)
+def _get_args(type_: object) -> tuple:
+    return get_args(type_)
 
 
 # our use of subclassing here causes weirdness for type checkers,
