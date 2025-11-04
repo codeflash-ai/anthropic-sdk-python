@@ -65,7 +65,7 @@ from ._compat import (
 from ._constants import RAW_RESPONSE_HEADER
 
 if TYPE_CHECKING:
-    from pydantic_core.core_schema import ModelField, ModelSchema, LiteralSchema, ModelFieldsSchema
+    from pydantic_core.core_schema import ModelField, LiteralSchema
 
 __all__ = ["BaseModel", "GenericModel"]
 
@@ -697,12 +697,10 @@ def _extract_field_schema_pv2(model: type[BaseModel], field_name: str) -> ModelF
     if schema["type"] != "model":
         return None
 
-    schema = cast("ModelSchema", schema)
     fields_schema = schema["schema"]
     if fields_schema["type"] != "model-fields":
         return None
 
-    fields_schema = cast("ModelFieldsSchema", fields_schema)
     field = fields_schema["fields"].get(field_name)
     if not field:
         return None
