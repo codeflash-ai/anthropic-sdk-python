@@ -17,6 +17,10 @@ from ._utils import lru_cache
 from .._types import InheritsGeneric
 from ._compat import is_union as _is_union
 
+_TYPE_ALIAS_TYPES = (typing_extensions.TypeAliasType,)
+
+_TYPE_ALIAS_TYPES: tuple[type[typing_extensions.TypeAliasType], ...] = (typing_extensions.TypeAliasType,)
+
 
 def is_annotated_type(typ: type) -> bool:
     return get_origin(typ) == Annotated
@@ -57,17 +61,6 @@ if sys.version_info >= (3, 12):
 
 
 def is_type_alias_type(tp: Any, /) -> TypeIs[typing_extensions.TypeAliasType]:
-    """Return whether the provided argument is an instance of `TypeAliasType`.
-
-    ```python
-    type Int = int
-    is_type_alias_type(Int)
-    # > True
-    Str = TypeAliasType("Str", str)
-    is_type_alias_type(Str)
-    # > True
-    ```
-    """
     return isinstance(tp, _TYPE_ALIAS_TYPES)
 
 
