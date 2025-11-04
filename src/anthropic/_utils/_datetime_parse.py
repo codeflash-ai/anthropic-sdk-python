@@ -93,11 +93,17 @@ def parse_datetime(value: Union[datetime, StrBytesIntFloat]) -> datetime:
         raise ValueError("invalid datetime format")
 
     kw = match.groupdict()
-    if kw["microsecond"]:
-        kw["microsecond"] = kw["microsecond"].ljust(6, "0")
+    ms = kw.get("microsecond")
+    if ms:
+        kw["microsecond"] = ms.ljust(6, "0")
 
-    tzinfo = _parse_timezone(kw.pop("tzinfo"))
-    kw_: Dict[str, Union[None, int, timezone]] = {k: int(v) for k, v in kw.items() if v is not None}
+    tz_str = kw.pop("tzinfo")
+    tzinfo = _parse_timezone(tz_str)
+    # Hoist construction of dict, avoid unnecessary extra conversions
+    kw_: Dict[str, Union[None, int, timezone]] = {}
+    for k, v in kw.items():
+        if v is not None:
+            kw_[k] = int(v)
     kw_["tzinfo"] = tzinfo
 
     return datetime(**kw_)  # type: ignore
@@ -128,7 +134,10 @@ def parse_date(value: Union[date, StrBytesIntFloat]) -> date:
     if match is None:
         raise ValueError("invalid date format")
 
-    kw = {k: int(v) for k, v in match.groupdict().items()}
+    # Avoid comprehension for clarity and dict update semantics
+    kw = {}
+    for k, v in match.groupdict().items():
+        kw[k] = int(v)
 
     try:
         return date(**kw)

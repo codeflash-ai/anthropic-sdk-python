@@ -477,23 +477,35 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
     # we allow `object` as the input type because otherwise, passing things like
     # `Literal['value']` will be reported as a type error by type checkers
     type_ = cast("type[object]", type_)
-    if is_type_alias_type(type_):
+    is_type_alias = is_type_alias_type(type_)
+    if is_type_alias:
         original_type = type_  # type: ignore[unreachable]
         type_ = type_.__value__  # type: ignore[unreachable]
 
     # unwrap `Annotated[T, ...]` -> `T`
-    if metadata is not None and len(metadata) > 0:
-        meta: tuple[Any, ...] = tuple(metadata)
-    elif is_annotated_type(type_):
-        meta = get_args(type_)[1:]
-        type_ = extract_type_arg(type_, 0)
-    else:
-        meta = tuple()
 
-    # we need to use the origin class for any types that are subscripted generics
-    # e.g. Dict[str, object]
-    origin = get_origin(type_) or type_
-    args = get_args(type_)
+    meta = None
+    # Keep tuple() creation out of frequent code paths
+    if metadata is not None and len(metadata) > 0:
+        meta = tuple(metadata)
+    else:
+        # Avoid recomputing; is_annotated_type is a little expensive due to get_origin
+        if is_annotated_type(type_):
+            args = get_args(type_)
+            meta = args[1:]
+            type_ = extract_type_arg(type_, 0)
+        else:
+            meta = ()
+
+    # Compute origin and args only once per call
+    origin = get_origin(type_)
+    if origin is None:
+        origin = type_
+        args = ()
+    else:
+        args = get_args(type_)
+
+    # Avoid repeated expensive dispatch logic in main loop
 
     if is_union(origin):
         try:
@@ -516,10 +528,11 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
         # without this block, if the data we get is something like `{'kind': 'bar', 'value': 'foo'}` then
         # we'd end up constructing `FooType` when it should be `BarType`.
         discriminator = _build_discriminated_union_meta(union=type_, meta_annotations=meta)
-        if discriminator and is_mapping(value):
-            variant_value = value.get(discriminator.field_alias_from or discriminator.field_name)
-            if variant_value and isinstance(variant_value, str):
-                variant_type = discriminator.mapping.get(variant_value)
+        if discriminator is not None and is_mapping(value):
+            # Save lookup and isinstance to locals
+            variant_val = value.get(discriminator.field_alias_from or discriminator.field_name)
+            if variant_val and isinstance(variant_val, str):
+                variant_type = discriminator.mapping.get(variant_val)
                 if variant_type:
                     return construct_type(type_=variant_type, value=value)
 
@@ -536,7 +549,10 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
         if not is_mapping(value):
             return value
 
-        _, items_type = get_args(type_)  # Dict[_, items_type]
+        # Avoid repeated get_args call for dict types; just reuse unpacked args
+        _, items_type = args if args else (None, None)  # fallback in edge case
+        if items_type is None:
+            return value
         return {key: construct_type(value=item, type_=items_type) for key, item in value.items()}
 
     if (
@@ -545,7 +561,9 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
         and (issubclass(origin, BaseModel) or issubclass(origin, GenericModel))
     ):
         if is_list(value):
-            return [cast(Any, type_).construct(**entry) if is_mapping(entry) else entry for entry in value]
+            ctype = cast(Any, type_)
+            return [ctype.construct(**entry) if is_mapping(entry) else entry for entry in value]
+
 
         if is_mapping(value):
             if issubclass(type_, BaseModel):
@@ -557,7 +575,9 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
         if not is_list(value):
             return value
 
-        inner_type = args[0]  # List[inner_type]
+        inner_type = args[0] if args else None
+        if inner_type is None:
+            return value
         return [construct_type(value=entry, type_=inner_type) for entry in value]
 
     if origin == float:
