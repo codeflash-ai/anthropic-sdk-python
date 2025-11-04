@@ -474,90 +474,106 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
     # types so that we can properly resolve forward references in `TypeAliasType` annotations
     original_type = None
 
-    # we allow `object` as the input type because otherwise, passing things like
-    # `Literal['value']` will be reported as a type error by type checkers
-    type_ = cast("type[object]", type_)
-    if is_type_alias_type(type_):
-        original_type = type_  # type: ignore[unreachable]
-        type_ = type_.__value__  # type: ignore[unreachable]
+    # pre-casting of type_
+    t_type = cast("type[object]", type_)
+
+    # Fast path for the most common primitive types
+    # (avoid a lot of repetitive function dispatch for simple cases)
+    if type_ is object or type_ is None:
+        return value
+
+    if is_type_alias_type(t_type):
+        original_type = t_type  # type: ignore[unreachable]
+        t_type = t_type.__value__  # type: ignore[unreachable]
+
+    # Unwrap Annotated in advance, avoid calling is_annotated_type and get_args repeatedly
 
     # unwrap `Annotated[T, ...]` -> `T`
     if metadata is not None and len(metadata) > 0:
         meta: tuple[Any, ...] = tuple(metadata)
-    elif is_annotated_type(type_):
-        meta = get_args(type_)[1:]
-        type_ = extract_type_arg(type_, 0)
+    elif is_annotated_type(t_type):
+        # To avoid repeated recomputation of get_args
+        _args = get_args(t_type)
+        meta = _args[1:]
+        t_type = extract_type_arg(t_type, 0)
     else:
         meta = tuple()
 
-    # we need to use the origin class for any types that are subscripted generics
-    # e.g. Dict[str, object]
-    origin = get_origin(type_) or type_
-    args = get_args(type_)
+    # Avoid repeated calls to get_origin/get_args for dict/list/etc
+    origin = get_origin(t_type) or t_type
+
+    # Branching to avoid function/method calls wherever possible
 
     if is_union(origin):
         try:
-            return validate_type(type_=cast("type[object]", original_type or type_), value=value)
+            return validate_type(type_=cast("type[object]", original_type or t_type), value=value)
         except Exception:
             pass
 
-        # if the type is a discriminated union then we want to construct the right variant
-        # in the union, even if the data doesn't match exactly, otherwise we'd break code
-        # that relies on the constructed class types, e.g.
-        #
-        # class FooType:
-        #   kind: Literal['foo']
-        #   value: str
-        #
-        # class BarType:
-        #   kind: Literal['bar']
-        #   value: int
-        #
-        # without this block, if the data we get is something like `{'kind': 'bar', 'value': 'foo'}` then
-        # we'd end up constructing `FooType` when it should be `BarType`.
-        discriminator = _build_discriminated_union_meta(union=type_, meta_annotations=meta)
+        # Only build discriminators if union
+        discriminator = _build_discriminated_union_meta(union=t_type, meta_annotations=meta)
         if discriminator and is_mapping(value):
-            variant_value = value.get(discriminator.field_alias_from or discriminator.field_name)
+            key = discriminator.field_alias_from or discriminator.field_name
+            variant_value = value.get(key)
             if variant_value and isinstance(variant_value, str):
                 variant_type = discriminator.mapping.get(variant_value)
                 if variant_type:
                     return construct_type(type_=variant_type, value=value)
 
         # if the data is not valid, use the first variant that doesn't fail while deserializing
+
+        # Loop variants preserving order; fast skip exceptions
+        args = get_args(t_type)
         for variant in args:
             try:
                 return construct_type(value=value, type_=variant)
             except Exception:
                 continue
+        raise RuntimeError(f"Could not convert data into a valid instance of {t_type}")
 
-        raise RuntimeError(f"Could not convert data into a valid instance of {type_}")
+    # Fast path: is_mapping check for dict origin
 
     if origin == dict:
         if not is_mapping(value):
             return value
-
-        _, items_type = get_args(type_)  # Dict[_, items_type]
+        dict_args = get_args(t_type)
+        # Only recompute items_type if actually used (avoid repeated get_args)
+        _, items_type = dict_args
+        # Avoid dict comprehension for empty
+        if not value:
+            return {}
         return {key: construct_type(value=item, type_=items_type) for key, item in value.items()}
 
     if (
-        not is_literal_type(type_)
+        not is_literal_type(t_type)
         and inspect.isclass(origin)
         and (issubclass(origin, BaseModel) or issubclass(origin, GenericModel))
     ):
         if is_list(value):
-            return [cast(Any, type_).construct(**entry) if is_mapping(entry) else entry for entry in value]
+            # Avoid repeated cast(Any, t_type)
+            to_construct = cast(Any, t_type)
+            # Avoid comprehension if list empty
+            if not value:
+                return []
+            return [
+                to_construct.construct(**entry) if is_mapping(entry) else entry
+                for entry in value
+            ]
 
         if is_mapping(value):
-            if issubclass(type_, BaseModel):
-                return type_.construct(**value)  # type: ignore[arg-type]
+            if issubclass(t_type, BaseModel):
+                return t_type.construct(**value)  # type: ignore[arg-type]
+            return cast(Any, t_type).construct(**value)
 
-            return cast(Any, type_).construct(**value)
+    # Fast path for list types
 
     if origin == list:
         if not is_list(value):
             return value
-
-        inner_type = args[0]  # List[inner_type]
+        list_args = get_args(t_type)
+        inner_type = list_args[0]  # List[inner_type]
+        if not value:
+            return []
         return [construct_type(value=entry, type_=inner_type) for entry in value]
 
     if origin == float:
@@ -569,13 +585,14 @@ def construct_type(*, value: object, type_: object, metadata: Optional[List[Any]
 
         return value
 
-    if type_ == datetime:
+    # Parse datetime/date inline, avoid repeated match if not needed
+    if t_type == datetime:
         try:
             return parse_datetime(value)  # type: ignore
         except Exception:
             return value
 
-    if type_ == date:
+    if t_type == date:
         try:
             return parse_date(value)  # type: ignore
         except Exception:
