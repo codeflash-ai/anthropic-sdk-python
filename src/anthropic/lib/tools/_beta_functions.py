@@ -179,7 +179,7 @@ class BetaFunctionTool(BaseFunctionTool[FunctionT]):
 
 class BetaAsyncFunctionTool(BaseFunctionTool[AsyncFunctionT]):
     async def call(self, input: object) -> BetaFunctionToolResultType:
-        if not iscoroutinefunction(self.func):
+        if not self._is_coroutine_func:
             raise RuntimeError("Cannot call a synchronous function asynchronously. Use `@tool` instead.")
 
         if not is_dict(input):
@@ -189,6 +189,10 @@ class BetaAsyncFunctionTool(BaseFunctionTool[AsyncFunctionT]):
             return await self._func_with_validate(**cast(Any, input))
         except pydantic.ValidationError as e:
             raise ValueError(f"Invalid arguments for function {self.name}") from e
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Cache coroutine status for self.func to optimize call checks
+        self._is_coroutine_func = iscoroutinefunction(self.func)
 
 
 @overload
