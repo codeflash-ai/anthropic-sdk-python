@@ -316,19 +316,23 @@ def build_events(
 ) -> list[BetaMessageStreamEvent]:
     events_to_fire: list[BetaMessageStreamEvent] = []
 
-    if event.type == "message_start":
+    event_type = event.type
+
+    if event_type == "message_start":
         events_to_fire.append(event)
-    elif event.type == "message_delta":
+    elif event_type == "message_delta":
         events_to_fire.append(event)
-    elif event.type == "message_stop":
+    elif event_type == "message_stop":
         events_to_fire.append(build(BetaMessageStopEvent, type="message_stop", message=message_snapshot))
-    elif event.type == "content_block_start":
+    elif event_type == "content_block_start":
         events_to_fire.append(event)
-    elif event.type == "content_block_delta":
+    elif event_type == "content_block_delta":
         events_to_fire.append(event)
 
         content_block = message_snapshot.content[event.index]
-        if event.delta.type == "text_delta":
+        delta_type = event.delta.type
+
+        if delta_type == "text_delta":
             if content_block.type == "text":
                 events_to_fire.append(
                     build(
@@ -338,7 +342,7 @@ def build_events(
                         snapshot=content_block.text,
                     )
                 )
-        elif event.delta.type == "input_json_delta":
+        elif delta_type == "input_json_delta":
             if content_block.type == "tool_use" or content_block.type == "mcp_tool_use":
                 events_to_fire.append(
                     build(
@@ -348,7 +352,7 @@ def build_events(
                         snapshot=content_block.input,
                     )
                 )
-        elif event.delta.type == "citations_delta":
+        elif delta_type == "citations_delta":
             if content_block.type == "text":
                 events_to_fire.append(
                     build(
@@ -358,7 +362,7 @@ def build_events(
                         snapshot=content_block.citations or [],
                     )
                 )
-        elif event.delta.type == "thinking_delta":
+        elif delta_type == "thinking_delta":
             if content_block.type == "thinking":
                 events_to_fire.append(
                     build(
@@ -368,7 +372,7 @@ def build_events(
                         snapshot=content_block.thinking,
                     )
                 )
-        elif event.delta.type == "signature_delta":
+        elif delta_type == "signature_delta":
             if content_block.type == "thinking":
                 events_to_fire.append(
                     build(
@@ -382,7 +386,7 @@ def build_events(
             # we only want exhaustive checking for linters, not at runtime
             if TYPE_CHECKING:  # type: ignore[unreachable]
                 assert_never(event.delta)
-    elif event.type == "content_block_stop":
+    elif event_type == "content_block_stop":
         content_block = message_snapshot.content[event.index]
 
         events_to_fire.append(
