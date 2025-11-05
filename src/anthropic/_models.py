@@ -452,6 +452,9 @@ def build(
             "Received positional arguments which are not supported; Keyword arguments must be used instead",
         )
 
+    construct_fn = getattr(base_model_cls, "construct", None)
+    if callable(construct_fn):
+        return cast(_BaseModelT, construct_fn(**kwargs))
     return cast(_BaseModelT, construct_type(type_=base_model_cls, value=kwargs))
 
 
