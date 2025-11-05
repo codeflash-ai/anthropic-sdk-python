@@ -2044,7 +2044,10 @@ def get_platform() -> Platform:
 
     if system == "linux":
         # https://distro.readthedocs.io/en/latest/#distro.id
-        distro_id = distro.id()
+        if not hasattr(get_platform, "_distro_id_cache"):
+            get_platform._distro_id_cache = distro.id()
+        distro_id = get_platform._distro_id_cache
+
         if distro_id == "freebsd":
             return "FreeBSD"
 
