@@ -3,10 +3,17 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable
 
+_signature_cache: dict[Any, inspect.Signature] = {}
+
 
 def function_has_argument(func: Callable[..., Any], arg_name: str) -> bool:
     """Returns whether or not the given function has a specific parameter"""
-    sig = inspect.signature(func)
+    key = func
+    try:
+        sig = _signature_cache[key]
+    except KeyError:
+        sig = inspect.signature(func)
+        _signature_cache[key] = sig
     return arg_name in sig.parameters
 
 
